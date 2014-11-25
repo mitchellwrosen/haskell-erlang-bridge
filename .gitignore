@@ -1,0 +1,5 @@
+*.chi
+*.chs.h
+*.hi
+*.o
+Erlang/Interface.hs
