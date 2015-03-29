@@ -18,8 +18,6 @@ import           Data.Word
 import           GHC.Exts                         (IsString)
 import           GHC.Generics
 import           System.Random
-import           Test.QuickCheck
-import           Test.QuickCheck.Instances        ()
 
 -- -----------------------------------------------------------------------------
 -- Alive request
@@ -154,7 +152,7 @@ instance Serialize NodeType where
         n  -> fail ("Unknown node type " ++ show n)
 
 data Protocol = TCP_IPV4
-    deriving Show
+    deriving (Eq, Show)
 
 instance Serialize Protocol where
     put TCP_IPV4 = putWord8 0
@@ -185,10 +183,6 @@ getCode expected = do
 data HandshakeName = HandshakeName Version HandshakeFlags Node
     deriving (Eq, Show, Generic)
 
-instance Arbitrary HandshakeName where
-    arbitrary = HandshakeName <$> arbitrary <*> arbitrary <*> arbitrary
-    shrink = genericShrink
-
 instance Serialize HandshakeName where
     put (HandshakeName version flags (Node name)) = do
         putWord16be (fromIntegral (7 + BS.length name))
@@ -214,7 +208,7 @@ data HandshakeStatus
     | HandshakeStatusAlive
     | HandshakeStatusTrue
     | HandshakeStatusFalse
-    deriving Show
+    deriving (Bounded, Enum, Eq, Show)
 
 instance Serialize HandshakeStatus where
     put HandshakeStatusOk             = putStatus "ok"
@@ -248,6 +242,7 @@ putStatus status = do
 -- Handshake challenge
 
 data HandshakeChallenge = HandshakeChallenge Version HandshakeFlags Challenge ByteString
+    deriving (Eq, Show, Generic)
 
 instance Serialize HandshakeChallenge where
     put (HandshakeChallenge version flags challenge name) = do
@@ -268,6 +263,7 @@ instance Serialize HandshakeChallenge where
 -- Handshake challenge reply
 
 data HandshakeChallengeReply = HandshakeChallengeReply Challenge Digest
+    deriving (Eq, Show, Generic)
 
 instance Serialize HandshakeChallengeReply where
     put (HandshakeChallengeReply challenge digest) = do
@@ -288,6 +284,7 @@ instance Serialize HandshakeChallengeReply where
 -- Handshake challenge ack
 
 newtype HandshakeChallengeAck = HandshakeChallengeAck Digest
+    deriving (Eq, Show)
 
 instance Serialize HandshakeChallengeAck where
     put (HandshakeChallengeAck digest) = do
@@ -307,19 +304,19 @@ instance Serialize HandshakeChallengeAck where
 -- Misc types and functions
 
 newtype Version = Version Word16
-    deriving (Eq, Num, Show, Serialize, Arbitrary)
+    deriving (Eq, Num, Show, Serialize)
 
 newtype Node = Node ByteString
-    deriving (Eq, Show, IsString, Arbitrary)
+    deriving (Eq, Show, IsString)
 
 newtype OutCookie = OutCookie ByteString
-    deriving (Eq, IsString, Arbitrary)
+    deriving (Eq, IsString)
 
 newtype InCookie = InCookie ByteString
-    deriving (Eq, IsString, Arbitrary)
+    deriving (Eq, IsString)
 
 newtype Challenge = Challenge Word32
-    deriving (Random, Serialize, Show)
+    deriving (Eq, Show, Random, Serialize)
 
 newtype Digest = Digest ByteString
     deriving (Eq, Show)
@@ -347,10 +344,6 @@ data HandshakeFlag
     | FlagUtf8Atoms
     deriving (Bounded, Enum, Eq, Ord, Show)
 
-instance Arbitrary HandshakeFlag where
-    arbitrary = arbitraryBoundedEnum
-    shrink _ = []
-
 flagToBits :: HandshakeFlag -> Word32
 flagToBits FlagPublished          = bit 0
 flagToBits FlagAtomCache          = bit 1
@@ -370,39 +363,25 @@ flagToBits FlagSmallAtomTags      = bit 14
 flagToBits FlagUtf8Atoms          = bit 15
 
 newtype HandshakeFlags = HandshakeFlags (Set HandshakeFlag)
-    deriving (Eq, Show, Arbitrary)
+    deriving (Eq, Show)
 
 instance Serialize HandshakeFlags where
     put (HandshakeFlags flags) = putWord32be (F.foldr ((.|.) . flagToBits) zeroBits flags)
     get = HandshakeFlags . go <$> getWord32be
       where
         go :: Word32 -> Set HandshakeFlag
-        go n = mconcat
-            [ if testBit n 0  then S.singleton FlagPublished          else mempty
-            , if testBit n 1  then S.singleton FlagAtomCache          else mempty
-            , if testBit n 2  then S.singleton FlagExtendedReferences else mempty
-            , if testBit n 3  then S.singleton FlagDistMonitor        else mempty
-            , if testBit n 4  then S.singleton FlagFunTags            else mempty
-            , if testBit n 5  then S.singleton FlagDistMonitorName    else mempty
-            , if testBit n 6  then S.singleton FlagHiddenAtomCache    else mempty
-            , if testBit n 7  then S.singleton FlagNewFunTags         else mempty
-            , if testBit n 8  then S.singleton FlagExtendedPidsPorts  else mempty
-            , if testBit n 9  then S.singleton FlagExportPtrTag       else mempty
-            , if testBit n 10 then S.singleton FlagBitBinaries        else mempty
-            , if testBit n 11 then S.singleton FlagNewFloats          else mempty
-            , if testBit n 12 then S.singleton FlagUnicodeIO          else mempty
-            , if testBit n 13 then S.singleton FlagDistHdrAtomCache   else mempty
-            , if testBit n 14 then S.singleton FlagSmallAtomTags      else mempty
-            , if testBit n 15 then S.singleton FlagUtf8Atoms          else mempty
-            ]
-
--- Half-byte
-data Nibble = Nibble Bool Bool Bool Bool
+        go n =
+            --  add_flag :: Int -> HandshakeFlag -> Set HandshakeFlag
+            let add_flag i flag = if testBit n i
+                                      then S.singleton flag
+                                      else mempty
+            in mconcat (map (uncurry add_flag) (zip [0..15] [minBound..maxBound]))
 
 -- -----------------------------------------------------------------------------
 -- Message
 
 data Message = Message DistributionHeader ControlMessage DataMessage
+    -- deriving (Eq, Show)
 
 instance Serialize Message where
     put (Message header control_msg data_msg) = do
@@ -424,6 +403,7 @@ instance Serialize Message where
 data DistributionHeader = DistributionHeader
                               Bool -- is long atoms? (not relevant if no cache refs)
                               [AtomCacheRef]
+    deriving (Show, Eq)
 
 instance Serialize DistributionHeader where
     put (DistributionHeader _ []) = do
@@ -495,28 +475,74 @@ instance Serialize DistributionHeader where
             | is_long_atoms = putWord16be (fromIntegral n)
             | otherwise     = putWord8    (fromIntegral n)
 
-    -- get = (\w -> IsLongAtoms (testBit w 4)) <$> getWord8
-    -- get = do
-    --     n <- getWord8
-    --     pure (AtomCacheRefFlag (testBit n 7) (testBit n 6) (testBit n 5) (testBit n 4),
-    --           AtomCacheRefFlag (testBit n 3) (testBit n 2) (testBit n 1) (testBit n 0))
-    -- get = do
-    --     n <- getWord8
-    --     pure (AtomCacheRefFlag (testBit n 7) (testBit n 6) (testBit n 5) (testBit n 4),
-    --           IsLongAtoms (testBit n 0))
+    get = do
+        getCode 131
+        getCode 68
+        getWord8 >>= \case
+            0 -> pure (DistributionHeader False []) -- 'False' here is meaningless
+            n -> do
+                (flags, is_long_atoms) <- getFlags (fromIntegral n)
+                refs <- forM flags (getRef is_long_atoms)
+                pure (DistributionHeader is_long_atoms refs)
+      where
+        -- Get flags and the nibble at the end of the flags (which only
+        -- contains one interesting bit)
+        getFlags :: Int -> Get ([Nibble], Bool)
+        getFlags n | even n = do
+            flags         <- splitAndFlipWord8s <$> replicateM (n `div` 2) getWord8
+            is_long_atoms <- (`testBit` 4) <$> getWord8
+            pure (flags, is_long_atoms)
+        getFlags n = do
+            flags <- splitAndFlipWord8s <$> replicateM (n `div` 2) getWord8
+            (last_flag, Nibble _ _ _ is_long_atoms) <- splitWord8 <$> getWord8
+            pure (flags ++ [last_flag], is_long_atoms)
 
-    get = undefined
+        getRef :: Bool -> Nibble -> Get AtomCacheRef
+        getRef is_long_atoms (Nibble True s1 s2 s3) = do
+            seg_index <- getWord8
+            len       <- getAtomTextLength is_long_atoms
+            atom_text <- getByteString len
+            pure (AtomCacheRef s1 s2 s3 seg_index (Just atom_text))
+        getRef _ (Nibble _ s1 s2 s3) = do
+            seg_index <- getWord8
+            pure (AtomCacheRef s1 s2 s3 seg_index Nothing)
+
+        -- Get either 1 or 2 bytes of length, per is_long_atoms.
+        getAtomTextLength :: Bool -> Get Int
+        getAtomTextLength True  = fromIntegral <$> getWord16be
+        getAtomTextLength False = fromIntegral <$> getWord8
+
+        -- {7 6 5 4 3 2 1 0} -> [{3 2 1 0}, {7 6 5 4}]
+        --
+        -- This odd function exists because "Flags for an even
+        -- AtomCacheReferenceIndex are located in the least significant half
+        -- byte and flags for an odd AtomCacheReferenceIndex are located in the
+        -- most significant half byte."
+        splitAndFlipWord8s :: [Word8] -> [Nibble]
+        splitAndFlipWord8s = (>>= go)
+          where
+            go :: Word8 -> [Nibble]
+            go w = [ Nibble (testBit w 3) (testBit w 2) (testBit w 1) (testBit w 0)
+                   , Nibble (testBit w 7) (testBit w 6) (testBit w 5) (testBit w 4)
+                   ]
+
+        -- {7 6 5 4 3 2 1 0} -> ({7 6 5 4}, {3 2 1 0})
+        splitWord8 :: Word8 -> (Nibble, Nibble)
+        splitWord8 w = let [n2, n1] = splitAndFlipWord8s [w] in (n1, n2)
 
 word8bits :: Bool -> Bool -> Bool -> Bool -> Bool -> Bool -> Bool -> Bool -> Word8
 word8bits b7 b6 b5 b4 b3 b2 b1 b0 =
-    if b7 then bit 7 else 0 .|.
-    if b6 then bit 6 else 0 .|.
-    if b5 then bit 5 else 0 .|.
-    if b4 then bit 4 else 0 .|.
-    if b3 then bit 3 else 0 .|.
-    if b2 then bit 2 else 0 .|.
-    if b1 then bit 1 else 0 .|.
-    if b0 then bit 0 else 0
+    set_bit_if b7 7 .|.
+    set_bit_if b6 6 .|.
+    set_bit_if b5 5 .|.
+    set_bit_if b4 4 .|.
+    set_bit_if b3 3 .|.
+    set_bit_if b2 2 .|.
+    set_bit_if b1 1 .|.
+    set_bit_if b0 0
+  where
+    set_bit_if :: Bool -> Int -> Word8
+    set_bit_if b i = if b then bit i else 0
 
 data AtomCacheRef = AtomCacheRef
                         Bool               -- 3 bits of segment index
@@ -524,6 +550,7 @@ data AtomCacheRef = AtomCacheRef
                         Bool
                         Word8              -- internal segment index
                         (Maybe ByteString) -- Just if new cache entry, Nothing if old
+    deriving (Eq, Show)
 
 -- +-------------------+---------------+
 -- | 1 bit             | 3 bits        |
@@ -552,3 +579,5 @@ data DataMessage = DataMessage
 instance Serialize DataMessage where
     put = undefined
     get = undefined
+
+data Nibble = Nibble Bool Bool Bool Bool

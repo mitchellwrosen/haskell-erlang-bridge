@@ -2,9 +2,11 @@ module Main where
 
 import Erlang.Distribution
 import Erlang.Distribution.Internal
+import Erlang.Distribution.Instances
 
 import Data.Serialize
 
+import Test.QuickCheck
 import Test.Tasty
 import qualified Test.Tasty.QuickCheck as QC
 
@@ -13,11 +15,33 @@ main = defaultMain props
 
 props :: TestTree
 props = testGroup "Properties"
-    [ handshakeProps
+    [ distributionProps
     ]
 
-handshakeProps :: TestTree
-handshakeProps = testGroup "Handshake properties"
-    [ QC.testProperty "HandshakeName decode-encode identity" $
-          \(handshake_name :: HandshakeName) -> decode (encode handshake_name) == Right handshake_name
+distributionProps :: TestTree
+distributionProps = testGroup "Erlang.Distribution"
+    [ decodeEncodeProps ]
+
+decodeEncodeProps :: TestTree
+decodeEncodeProps = testGroup "decode . encode == id"
+    [ QC.testProperty "Digest"                  (prop_decode_encode_id :: Digest                  -> Property)
+    , QC.testProperty "DistributionHeader"      prop_dist_header_decode_encode_id
+    , QC.testProperty "HandshakeChallenge"      (prop_decode_encode_id :: HandshakeChallenge      -> Property)
+    , QC.testProperty "HandshakeChallengeReply" (prop_decode_encode_id :: HandshakeChallengeReply -> Property)
+    , QC.testProperty "HandshakeChallengeAck"   (prop_decode_encode_id :: HandshakeChallengeAck   -> Property)
+    , QC.testProperty "HandshakeFlags       "   (prop_decode_encode_id :: HandshakeFlags          -> Property)
+    , QC.testProperty "HandshakeName"           (prop_decode_encode_id :: HandshakeName           -> Property)
+    , QC.testProperty "HandshakeStatus"         (prop_decode_encode_id :: HandshakeStatus         -> Property)
+    , QC.testProperty "NodeName"                (prop_decode_encode_id :: HandshakeName           -> Property)
+    , QC.testProperty "Protocol"                (prop_decode_encode_id :: Protocol                -> Property)
     ]
+
+prop_decode_encode_id :: (Eq a, Show a, Arbitrary a, Serialize a) => a -> Property
+prop_decode_encode_id x = decode (encode x) === Right x
+
+-- DistributionHeader is a little special, because we lose information (is_long_atom) when
+-- encoding if there are no cache refs to encode.
+prop_dist_header_decode_encode_id :: DistributionHeader -> Property
+prop_dist_header_decode_encode_id x@(DistributionHeader _ [])   = decode (encode x) === Right (DistributionHeader False [])
+prop_dist_header_decode_encode_id x@(DistributionHeader _ refs) = decode (encode x) === Right x
+

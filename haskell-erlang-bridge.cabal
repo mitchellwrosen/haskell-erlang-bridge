@@ -31,8 +31,6 @@ library
                      , containers
                      , cryptohash
                      , network-simple
-                     , QuickCheck
-                     , quickcheck-instances
                      , random
                      , transformers
   hs-source-dirs:      src
@@ -44,9 +42,15 @@ test-suite test
   type:                exitcode-stdio-1.0
   hs-source-dirs:      test
   main-is:             test.hs
-  default-extensions: ScopedTypeVariables
+  default-extensions: DeriveGeneric
+                    , GeneralizedNewtypeDeriving
+                    , ScopedTypeVariables
+                    , StandaloneDeriving
   build-depends:       base >=4.7 && <5
+                     , bytestring
                      , cereal
                      , haskell-erlang-bridge
+                     , QuickCheck
+                     , quickcheck-instances
                      , tasty
                      , tasty-quickcheck
