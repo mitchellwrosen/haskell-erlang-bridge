@@ -2,6 +2,8 @@ module Erlang.Distribution.Internal where
 
 import Prelude hiding (getChar)
 
+import Network.TCP.Receive
+
 import           Control.Applicative
 import           Control.Monad
 import           Data.Attoparsec.ByteString.Char8
@@ -27,27 +29,26 @@ data AliveRequest =
         Port NodeType Protocol HighestVersion LowestVersion Word16 ByteString Word16 ByteString
     deriving Show
 
-putAliveRequest :: AliveRequest -> Put
-putAliveRequest (AliveRequest (Port port)
-                              node_type
-                              protocol
-                              (HighestVersion highest_ver)
-                              (LowestVersion lowest_ver)
-                              name_len
-                              name
-                              extra_len
-                              extra) = do
-      putWord16be (13 + name_len + extra_len)
-      putWord8 120
-      put port
-      put node_type
-      put protocol
-      put highest_ver
-      put lowest_ver
-      put name_len
-      putByteString name
-      put extra_len
-      putByteString extra
+encodeAliveRequest :: AliveRequest -> ByteString
+encodeAliveRequest (AliveRequest (Port port)
+                  node_type
+                  protocol
+                  (HighestVersion highest_ver)
+                  (LowestVersion lowest_ver)
+                  name_len
+                  name
+                  extra_len
+                  extra) = runPut $ do
+        putWord8 120
+        put port
+        put node_type
+        put protocol
+        put highest_ver
+        put lowest_ver
+        put name_len
+        putByteString name
+        put extra_len
+        putByteString extra
 
 -- -----------------------------------------------------------------------------
 -- Alive reply
@@ -55,19 +56,21 @@ putAliveRequest (AliveRequest (Port port)
 data AliveReply = AliveReply Word8 Word16
     deriving Show
 
-getAliveReply :: Get AliveReply
-getAliveReply = do
-    getCode 121
-    AliveReply <$> get <*> get
+receiveAliveReply :: Receive AliveReply
+receiveAliveReply = receive 4 `with` p
+  where
+    p :: Get AliveReply
+    p = do
+        getCode 121
+        AliveReply <$> getWord8 <*> getWord16be
 
 -- -----------------------------------------------------------------------------
 -- Port request
 
 data PortRequest = PortRequest ByteString
 
-putPortRequest :: PortRequest -> Put
-putPortRequest (PortRequest name) = do
-    putWord16be (1 + fromIntegral (BS.length name))
+encodePortRequest :: PortRequest -> ByteString
+encodePortRequest (PortRequest name) = runPut $ do
     putWord8 122
     putByteString name
 
@@ -75,56 +78,42 @@ putPortRequest (PortRequest name) = do
 -- Port reply
 
 data PortReply
-    = PortReplySuccess Port NodeType Protocol HighestVersion LowestVersion Word16 ByteString Word16 ByteString
+    = PortReplySuccess Port NodeType Protocol HighestVersion LowestVersion ByteString ByteString
     | PortReplyFailure Word8
 
-getPortReply :: Get PortReply
-getPortReply = do
-    getCode 119
-    getWord8 >>= \case
+receivePortReply :: Receive PortReply
+receivePortReply = do
+    result <- receive 2 `with` (getCode 119 >> getWord8)
+    case result of
         0 -> do
-            port_num    <- get
-            node_type   <- get
-            protocol    <- get
-            highest_ver <- get
-            lowest_ver  <- get
-            name_len    <- get
-            name        <- getByteString (fromIntegral name_len)
-            extra_len   <- get
-            extra       <- getByteString (fromIntegral extra_len)
-            pure $ PortReplySuccess (Port port_num)
-                                    node_type
-                                    protocol
-                                    (HighestVersion highest_ver)
-                                    (LowestVersion lowest_ver)
-                                    name_len
-                                    name
-                                    extra_len
-                                    extra
-        n ->
-            pure (PortReplyFailure n)
+            (a, b, c, d, e) <- receive 8 `with` ((,,,,) <$> get <*> get <*> get <*> get <*> get)
+            f <- receivePacket2
+            g <- receivePacket2
+            pure (PortReplySuccess a b c d e f g)
+
+        n -> pure (PortReplyFailure n)
 
 -- -----------------------------------------------------------------------------
 -- Names request
 
-putNamesRequest :: Put
-putNamesRequest = putWord16be 1 >> putWord8 110
+encodeNamesRequest :: ByteString
+encodeNamesRequest = runPut (putWord8 110)
 
 -- -----------------------------------------------------------------------------
 -- Names reply
 
-data NamesReply = NamesReply
-    { names_reply_epmd_port :: Word32
-    , names_reply_names     :: [(ByteString, Port)]
-    }
+data NamesReply = NamesReply Word32 [(ByteString, Port)]
 
-getNamesReply :: Get NamesReply
-getNamesReply = do
-    port <- getWord32be
-    rest <- getByteString =<< remaining
-    case parseOnly (many nameAndPort) rest of
-        Left err -> fail err
-        Right names_and_ports -> pure (NamesReply port names_and_ports)
+receiveNamesReply :: Receive NamesReply
+receiveNamesReply = receiveAll `with` p
+  where
+    p :: Get NamesReply
+    p = do
+        port <- getWord32be
+        rest <- getBytes =<< remaining
+        case parseOnly (many nameAndPort) rest of
+            Left err              -> fail err
+            Right names_and_ports -> pure (NamesReply port names_and_ports)
 
 -- What the hell, epmd?
 -- Parses: "name foo at port 8888"
@@ -183,19 +172,23 @@ getCode expected = do
 data HandshakeName = HandshakeName Version HandshakeFlags Node
     deriving (Eq, Show, Generic)
 
-instance Serialize HandshakeName where
-    put (HandshakeName version flags (Node name)) = do
-        putWord16be (fromIntegral (7 + BS.length name))
-        put 'n'
-        put version
-        put flags
-        putByteString name
+encodeHandshakeName :: HandshakeName -> ByteString
+encodeHandshakeName (HandshakeName version flags (Node name)) = runPut $ do
+    put 'n'
+    put version
+    put flags
+    putByteString name
 
-    get = do
-        len <- getWord16be
-        _   <- ensure (fromIntegral len)
+receiveHandshakeName :: Receive HandshakeName
+receiveHandshakeName = receivePacket2 `with` p
+  where
+    p :: Get HandshakeName
+    p = do
         getChar 'n'
-        HandshakeName <$> get <*> get <*> (Node <$> getByteString (fromIntegral (len - 7)))
+        ver <- get
+        flags <- get
+        node <- getBytes =<< remaining
+        pure (HandshakeName ver flags (Node node))
 
 -- -----------------------------------------------------------------------------
 -- Handshake status
@@ -210,19 +203,13 @@ data HandshakeStatus
     | HandshakeStatusFalse
     deriving (Bounded, Enum, Eq, Show)
 
-instance Serialize HandshakeStatus where
-    put HandshakeStatusOk             = putStatus "ok"
-    put HandshakeStatusOkSimultaneous = putStatus "ok_simultaneous"
-    put HandshakeStatusNok            = putStatus "nok"
-    put HandshakeStatusNotAllowed     = putStatus "not_allowed"
-    put HandshakeStatusAlive          = putStatus "alive"
-    put HandshakeStatusTrue           = putStatus "true"
-    put HandshakeStatusFalse          = putStatus "false"
-
-    get = do
-        _ <- getWord16be -- I guess just ignore the length
+receiveHandshakeStatus :: Receive HandshakeStatus
+receiveHandshakeStatus = receivePacket2 `with` p
+  where
+    p :: Get HandshakeStatus
+    p = do
         getChar 's'
-        remaining >>= getByteString >>= \case
+        remaining >>= getBytes >>= \case
             "ok"              -> pure HandshakeStatusOk
             "ok_simultaneous" -> pure HandshakeStatusOkSimultaneous
             "nok"             -> pure HandshakeStatusNok
@@ -232,32 +219,56 @@ instance Serialize HandshakeStatus where
             "false"           -> pure HandshakeStatusFalse
             x                 -> fail ("Unexpected status " ++ BS.unpack x)
 
-putStatus :: ByteString -> Put
-putStatus status = do
-    putWord16be (fromIntegral (1 + BS.length status))
-    put 's'
-    putByteString status
+encodeHandshakeStatus :: HandshakeStatus -> ByteString
+encodeHandshakeStatus = runPut . p
+  where
+    p :: HandshakeStatus -> Put
+    p HandshakeStatusOk             = putStatus "ok"
+    p HandshakeStatusOkSimultaneous = putStatus "ok_simultaneous"
+    p HandshakeStatusNok            = putStatus "nok"
+    p HandshakeStatusNotAllowed     = putStatus "not_allowed"
+    p HandshakeStatusAlive          = putStatus "alive"
+    p HandshakeStatusTrue           = putStatus "true"
+    p HandshakeStatusFalse          = putStatus "false"
+
+    putStatus :: ByteString -> Put
+    putStatus status = do
+        put 's'
+        putByteString status
 
 -- -----------------------------------------------------------------------------
 -- Handshake challenge
 
-data HandshakeChallenge = HandshakeChallenge Version HandshakeFlags Challenge ByteString
+data HandshakeChallenge = HandshakeChallenge Version HandshakeFlags Challenge Node
     deriving (Eq, Show, Generic)
 
-instance Serialize HandshakeChallenge where
-    put (HandshakeChallenge version flags challenge name) = do
-        putWord16be (fromIntegral (11 + BS.length name))
-        put 'n'
-        put version
-        put flags
-        put challenge
-        putByteString name
-
-    get = do
-        len <- getWord16be
-        _   <- ensure (fromIntegral len)
+receiveHandshakeChallenge :: Node -> Receive HandshakeChallenge
+receiveHandshakeChallenge (Node expected_node) = receivePacket2 `with` p
+  where
+    p :: Get HandshakeChallenge
+    p = do
         getChar 'n'
-        HandshakeChallenge <$> get <*> get <*> get <*> getByteString (fromIntegral (len - 11))
+        ver         <- get
+        flags       <- get
+        challenge   <- get
+        actual_node <- getBytes =<< remaining
+
+        unless (expected_node == actual_node) $
+            fail ("In challenge receive, expected node "
+                  ++ BS.unpack expected_node
+                  ++ " but found node "
+                  ++ BS.unpack actual_node)
+
+        pure (HandshakeChallenge ver flags challenge (Node actual_node))
+
+-- // currently unused
+-- encodeHandshakeChallenge :: HandshakeChallenge -> Put
+-- encodeHandshakeChallenge (HandshakeChallenge version flags challenge name) = runPut $ do
+--     put 'n'
+--     put version
+--     put flags
+--     put challenge
+--     putByteString name
 
 -- -----------------------------------------------------------------------------
 -- Handshake challenge reply
@@ -265,20 +276,20 @@ instance Serialize HandshakeChallenge where
 data HandshakeChallengeReply = HandshakeChallengeReply Challenge Digest
     deriving (Eq, Show, Generic)
 
-instance Serialize HandshakeChallengeReply where
-    put (HandshakeChallengeReply challenge digest) = do
-        putWord16be 21
-        put 'r'
-        put challenge
-        put digest
+encodeHandshakeChallengeReply :: HandshakeChallengeReply -> ByteString
+encodeHandshakeChallengeReply (HandshakeChallengeReply challenge digest) = runPut $ do
+    put 'r'
+    put challenge
+    put digest
 
-    get = do
-        len <- getWord16be
-        when (len /= 21) $
-            fail ("Unexpected challenge reply length " ++ show len)
-
-        getChar 'r'
-        HandshakeChallengeReply <$> get <*> get
+-- // currently unused
+-- receiveHandshakeChallengeReply :: Receive HandshakeChallengeReply
+-- receiveHandshakeChallengeReply = receivePacket2 `with` p
+--   where
+--     p :: Get HandshakeChallengeReply
+--     p = do
+--         getChar 'r'
+--         HandshakeChallengeReply <$> get <*> get
 
 -- -----------------------------------------------------------------------------
 -- Handshake challenge ack
@@ -286,19 +297,27 @@ instance Serialize HandshakeChallengeReply where
 newtype HandshakeChallengeAck = HandshakeChallengeAck Digest
     deriving (Eq, Show)
 
-instance Serialize HandshakeChallengeAck where
-    put (HandshakeChallengeAck digest) = do
-        putWord16be 17
-        put 'a'
-        put digest
-
-    get = do
-        len <- getWord16be
-        when (len /= 17) $
-            fail ("Unexpected challenge ack length " ++ show len)
-
+receiveHandshakeChallengeAck :: Digest -> Receive HandshakeChallengeAck
+receiveHandshakeChallengeAck (Digest my_digest) = receivePacket2 `with` p
+  where
+    p :: Get HandshakeChallengeAck
+    p = do
         getChar 'a'
-        HandshakeChallengeAck <$> get
+        Digest their_digest <- get
+
+        unless (my_digest == their_digest) $
+            fail ("Expected digest "
+                  ++ BS.unpack my_digest
+                  ++ " but found digest "
+                  ++ BS.unpack their_digest)
+
+        pure (HandshakeChallengeAck (Digest their_digest))
+
+-- // currently unused
+-- encodeHandshakeChallengeAck :: HandshakeChallengeAck -> ByteString
+-- encodeHandshakeChallengeAck (HandshakeChallengeAck digest) = runPut $ do
+--     put 'a'
+--     put digest
 
 -- -----------------------------------------------------------------------------
 -- Misc types and functions

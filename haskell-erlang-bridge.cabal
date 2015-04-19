@@ -15,10 +15,12 @@ cabal-version:       >=1.10
 
 library
   exposed-modules:     Erlang.Distribution
-                       Erlang.Distribution.Internal
-                     , Term
+                     , Erlang.Distribution.Internal
+                     , Network.TCP.Receive
+  -- other-modules:
   default-extensions:   DeriveDataTypeable
                       , DeriveGeneric
+                      , FlexibleInstances
                       , GeneralizedNewtypeDeriving
                       , LambdaCase
                       , OverloadedStrings
@@ -30,6 +32,9 @@ library
                      , cereal
                      , containers
                      , cryptohash
+                     , either
+                     , mtl
+                     , network
                      , network-simple
                      , random
                      , transformers

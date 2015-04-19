@@ -14,19 +14,19 @@ module Erlang.Distribution
     ) where
 
 import Erlang.Distribution.Internal
+import Network.TCP.Receive
 
 import           Control.Applicative
 import           Control.Exception
-import           Control.Monad.IO.Class (MonadIO)
-import           Crypto.Hash.MD5        (hash)
-import           Data.ByteString        (ByteString)
-import qualified Data.ByteString.Char8  as BS
+import           Crypto.Hash.MD5           (hash)
+import           Data.ByteString           (ByteString)
+import qualified Data.ByteString.Char8     as BS
 import           Data.Monoid
+import           Network.Simple.TCP
 import           Data.Serialize
-import qualified Data.Set               as S
+import qualified Data.Set                  as S
 import           Data.Typeable
 import           Data.Word
-import           Network.Simple.TCP
 import           System.Random
 
 -- -----------------------------------------------------------------------------
@@ -46,14 +46,14 @@ epmdRegister :: Port        -- ^ This node's listening port.
              -> HostName    -- ^ Epmd host, e.g. "0.0.0.0"
              -> ServiceName -- ^ Epmd port, e.g. "4369"
              -> IO (IO ())
-epmdRegister port_num name epmd_host epmd_port = do
-    (sock, _) <- connectSock epmd_host epmd_port
-    let alive_req = AliveRequest port_num NormalNode TCP_IPV4 5 5 (fromIntegral (BS.length name)) name 0 ""
-    send sock (encodeWith putAliveRequest alive_req)
-    recvEpmdMsg sock getAliveReply >>= \case
-        AliveReply result _
-            | result == 0 -> return (closeSock sock)
-            | otherwise   -> closeSock sock >> throw EpmdException
+epmdRegister port_num name epmd_host epmd_port =
+    bracketOnError (connectSock epmd_host epmd_port) (closeSock . fst) $ \(sock, _) -> do
+        let alive_req = AliveRequest port_num NormalNode TCP_IPV4 5 5 (fromIntegral (BS.length name)) name 0 ""
+        sendPacket2 sock (encodeAliveRequest alive_req)
+        runReceive receiveAliveReply sock >>= \case
+            Left _err              -> throw EpmdException
+            Right (AliveReply 0 _) -> pure (closeSock sock)
+            Right _                -> throw EpmdException
 
 -- | Ask for the node info of a named node. Return either the port-please error
 -- code, or the port, highest, and lowest protocol versions of the requested
@@ -62,33 +62,24 @@ epmdNodeInfo :: HostName    -- ^ Epmd host, e.g. "0.0.0.0"
              -> ServiceName -- ^ Epmd port, e.g. "4369"
              -> ByteString  -- ^ Node name.
              -> IO (Either Word8 (Port, HighestVersion, LowestVersion))
-epmdNodeInfo epmd_host epmd_port name = do
-    (sock, _) <- connectSock epmd_host epmd_port
-    send sock (encodeWith putPortRequest (PortRequest name))
-    recvEpmdMsg sock getPortReply >>= \case
-        PortReplyFailure code -> pure (Left code)
-        PortReplySuccess port _ _ highest_ver lowest_ver _ _ _ _ ->
-            pure (Right (port, highest_ver, lowest_ver))
+epmdNodeInfo epmd_host epmd_port name =
+    bracket (connectSock epmd_host epmd_port) (closeSock . fst) $ \(sock, _) -> do
+        sendPacket2 sock (encodePortRequest (PortRequest name))
+        runReceive receivePortReply sock >>= \case
+            Left _err                                           -> throw EpmdException
+            Right (PortReplyFailure code)                       -> pure (Left code)
+            Right (PortReplySuccess port _ _ hi_ver lo_ver _ _) -> pure (Right (port, hi_ver, lo_ver))
 
 -- | Get all registered names/ports.
 epmdNames :: HostName    -- ^ Epmd host, e.g. "0.0.0.0"
           -> ServiceName -- ^ Epmd port, e.g. "4369"
           -> IO [(ByteString, Port)]
-epmdNames epmd_host epmd_port = do
-    (sock, _) <- connectSock epmd_host epmd_port
-    send sock (runPut putNamesRequest)
-    names_reply_names <$> recvEpmdMsg sock getNamesReply
-
--- Receive a message from epmd. Throw an async exception if the socket is closed
--- or the message doesn't parse.
-recvEpmdMsg :: Socket -> Get a -> IO a
-recvEpmdMsg sock g =
-    (runGet g <$> recvAll sock) >>= \case
-        Left _       -> throw EpmdException
-        Right result -> return result
-
-encodeWith :: (a -> Put) -> a -> ByteString
-encodeWith p = runPut . p
+epmdNames epmd_host epmd_port =
+    bracket (connectSock epmd_host epmd_port) (closeSock . fst) $ \(sock, _) -> do
+        sendPacket2 sock encodeNamesRequest
+        runReceive receiveNamesReply sock >>= \case
+            Left _err                  -> throw EpmdException
+            Right (NamesReply _ names) -> pure names
 
 -- -----------------------------------------------------------------------------
 -- Handshake API
@@ -101,67 +92,74 @@ instance Exception HandshakeException
 
 -- | The result of a handshake.
 data HandshakeResult
-    = HandshakeOk         -- ^ Handshake successful.
+    = HandshakeOk Socket  -- ^ Handshake successful.
     | HandshakeNotOk      -- ^ Handshake already initiated by other node.
     | HandshakeNotAllowed -- ^ Handshake not successful.
     | HandshakeAlive      -- ^ Handshake already succeeded.
     deriving Show
 
 nodeHandshake :: Node -> OutCookie -> InCookie -> Version -> HostName -> ServiceName -> IO HandshakeResult
-nodeHandshake name out_cookie in_cookie version host service = do
-    (sock, _) <- connectSock host service
-    sendName sock (HandshakeName version flags name) out_cookie in_cookie
+nodeHandshake node (OutCookie out_cookie) (InCookie in_cookie) version host service =
+    bracketOnError (connectSock host service) (closeSock . fst) (nodeHandshake' . fst)
   where
-    flags :: HandshakeFlags
-    flags = HandshakeFlags $ S.fromList
-        [ FlagExtendedReferences
-        , FlagExtendedPidsPorts
-        ]
+    nodeHandshake' :: Socket -> IO HandshakeResult
+    nodeHandshake' sock = send_name (HandshakeName version flags node)
+      where
+        send_name :: HandshakeName -> IO HandshakeResult
+        send_name name = do
+            sendPacket2 sock (encodeHandshakeName name)
+            recv_status
 
-sendName :: Socket -> HandshakeName -> OutCookie -> InCookie -> IO HandshakeResult
-sendName sock name out_cookie in_cookie = do
-    send sock (encode name)
-    recvStatus sock out_cookie in_cookie
+        recv_status :: IO HandshakeResult
+        recv_status =
+            recvHsMsg receiveHandshakeStatus sock ("Error receiving status" ++) >>= \case
+                HandshakeStatusOk             -> recv_challenge
+                HandshakeStatusOkSimultaneous -> recv_challenge
+                HandshakeStatusNok            -> pure HandshakeNotOk
+                HandshakeStatusNotAllowed     -> pure HandshakeNotAllowed
+                HandshakeStatusAlive          -> status_alive
+                status                        -> throw (HandshakeException ("Unexpected status: " ++ show status))
 
-recvStatus :: Socket -> OutCookie -> InCookie -> IO HandshakeResult
-recvStatus sock out_cookie in_cookie =
-    recvAllHandshakeMsg sock >>= \case
-        HandshakeStatusOk             -> recvChallenge sock out_cookie in_cookie
-        HandshakeStatusOkSimultaneous -> recvChallenge sock out_cookie in_cookie
-        HandshakeStatusNok            -> return HandshakeNotOk
-        HandshakeStatusNotAllowed     -> return HandshakeNotAllowed
-        HandshakeStatusAlive          -> send sock (encode HandshakeStatusFalse) >> return HandshakeAlive
-        status                        -> throw (HandshakeException ("Unexpected status: " ++ show status))
+        recv_challenge :: IO HandshakeResult
+        recv_challenge = do
+            HandshakeChallenge _ _ their_challenge _ <-
+                recvHsMsg (receiveHandshakeChallenge node) sock ("Error receiving challenge: " ++)
+            my_challenge <- generateChallenge
+            let digest = generateDigest their_challenge out_cookie
+            send_challenge_reply (HandshakeChallengeReply my_challenge digest) my_challenge
 
-recvChallenge :: Socket -> OutCookie -> InCookie -> IO HandshakeResult
-recvChallenge sock (OutCookie out_cookie) in_cookie = do
-    HandshakeChallenge _ _ their_challenge _ <- recvAllHandshakeMsg sock
-    my_challenge <- generateChallenge
-    let digest = generateDigest their_challenge out_cookie
-    sendChallengeReply sock (HandshakeChallengeReply my_challenge digest) my_challenge in_cookie
+        send_challenge_reply :: HandshakeChallengeReply -> Challenge -> IO HandshakeResult
+        send_challenge_reply reply challenge = do
+            sendPacket2 sock (encodeHandshakeChallengeReply reply)
+            recv_challenge_ack challenge
 
-sendChallengeReply :: Socket -> HandshakeChallengeReply -> Challenge -> InCookie -> IO HandshakeResult
-sendChallengeReply sock reply challenge in_cookie = do
-    send sock (encode reply)
-    recvChallengeAck sock challenge in_cookie
+        recv_challenge_ack :: Challenge -> IO HandshakeResult
+        recv_challenge_ack my_challenge = do
+            let my_digest = generateDigest my_challenge in_cookie
 
-recvChallengeAck :: Socket -> Challenge -> InCookie -> IO HandshakeResult
-recvChallengeAck sock my_challenge (InCookie in_cookie) = do
-    HandshakeChallengeAck their_digest <- recvAllHandshakeMsg sock
-    let my_digest = generateDigest my_challenge in_cookie
-    if my_digest == their_digest
-        then return HandshakeOk
-        else throw (HandshakeException "Digest mismatch")
+            -- `receiveHandshakeChallengeAck` takes care of comparing digests.
+            _ <- recvHsMsg
+                   (receiveHandshakeChallengeAck my_digest)
+                   sock
+                   ("Error receiving challenge ack: " ++)
 
-recvAllHandshakeMsg :: Serialize a => Socket -> IO a
-recvAllHandshakeMsg sock = recvAll sock >>= decodeHandshakeReply
+            pure (HandshakeOk sock)
 
-decodeHandshakeReply :: Serialize a => ByteString -> IO a
-decodeHandshakeReply reply = do
-    putStrLn $ "Raw reply: " ++ show reply
-    case decode reply of
-        Left err     -> throw (HandshakeException ("Decode error: " ++ err))
-        Right result -> return result
+        status_alive :: IO HandshakeResult
+        status_alive = do
+            sendPacket2 sock (encodeHandshakeStatus HandshakeStatusFalse)
+            pure HandshakeAlive
+
+        flags :: HandshakeFlags
+        flags = HandshakeFlags $ S.fromList
+            [ FlagExtendedReferences
+            , FlagExtendedPidsPorts
+            ]
+
+
+-- Helper function that throws HandshakeExceptions when message parsing fails.
+recvHsMsg :: Receive a -> Socket -> (String -> String) -> IO a
+recvHsMsg r sock f = runReceive r sock >>= either (throw . HandshakeException . f . show) pure
 
 generateChallenge :: IO Challenge
 generateChallenge = randomIO
@@ -169,17 +167,8 @@ generateChallenge = randomIO
 generateDigest :: Challenge -> ByteString -> Digest
 generateDigest (Challenge challenge) cookie = Digest (hash (cookie <> BS.pack (show challenge)))
 
--- Recv from a socket until no bytes remain.
-recvAll :: forall m. MonadIO m => Socket -> m ByteString
-recvAll = go ""
+sendPacket2 :: Socket -> ByteString -> IO ()
+sendPacket2 sock bytes = send sock (len <> bytes)
   where
-    go :: ByteString -> Socket -> m ByteString
-    go acc sock =
-        recv sock block_size >>= \case
-            Nothing    -> return acc
-            Just bytes
-                | BS.length bytes == block_size -> go (acc <> bytes) sock
-                | otherwise                     -> return (acc <> bytes)
-
-    block_size :: Int
-    block_size = 4096
+    len :: ByteString
+    len = runPut (putWord16be (fromIntegral (BS.length bytes)))

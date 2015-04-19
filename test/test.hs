@@ -24,16 +24,10 @@ distributionProps = testGroup "Erlang.Distribution"
 
 decodeEncodeProps :: TestTree
 decodeEncodeProps = testGroup "decode . encode == id"
-    [ QC.testProperty "Digest"                  (prop_decode_encode_id :: Digest                  -> Property)
-    , QC.testProperty "DistributionHeader"      prop_dist_header_decode_encode_id
-    , QC.testProperty "HandshakeChallenge"      (prop_decode_encode_id :: HandshakeChallenge      -> Property)
-    , QC.testProperty "HandshakeChallengeReply" (prop_decode_encode_id :: HandshakeChallengeReply -> Property)
-    , QC.testProperty "HandshakeChallengeAck"   (prop_decode_encode_id :: HandshakeChallengeAck   -> Property)
-    , QC.testProperty "HandshakeFlags       "   (prop_decode_encode_id :: HandshakeFlags          -> Property)
-    , QC.testProperty "HandshakeName"           (prop_decode_encode_id :: HandshakeName           -> Property)
-    , QC.testProperty "HandshakeStatus"         (prop_decode_encode_id :: HandshakeStatus         -> Property)
-    , QC.testProperty "NodeName"                (prop_decode_encode_id :: HandshakeName           -> Property)
-    , QC.testProperty "Protocol"                (prop_decode_encode_id :: Protocol                -> Property)
+    [ QC.testProperty "Digest"             (prop_decode_encode_id :: Digest         -> Property)
+    , QC.testProperty "HandshakeFlags"     (prop_decode_encode_id :: HandshakeFlags -> Property)
+    , QC.testProperty "Protocol"           (prop_decode_encode_id :: Protocol       -> Property)
+    , QC.testProperty "DistributionHeader" prop_dist_header_decode_encode_id
     ]
 
 prop_decode_encode_id :: (Eq a, Show a, Arbitrary a, Serialize a) => a -> Property
