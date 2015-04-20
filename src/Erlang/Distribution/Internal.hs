@@ -39,6 +39,7 @@ encodeAliveRequest (AliveRequest (Port port)
                   name
                   extra_len
                   extra) = runPut $ do
+        putWord16be (13 + name_len + extra_len)
         putWord8 120
         put port
         put node_type
@@ -71,6 +72,7 @@ data PortRequest = PortRequest ByteString
 
 encodePortRequest :: PortRequest -> ByteString
 encodePortRequest (PortRequest name) = runPut $ do
+    putWord16be (1 + fromIntegral (BS.length name))
     putWord8 122
     putByteString name
 
@@ -98,7 +100,9 @@ receivePortReply = do
 -- Names request
 
 encodeNamesRequest :: ByteString
-encodeNamesRequest = runPut (putWord8 110)
+encodeNamesRequest = runPut $ do
+    putWord16be 1
+    putWord8 110
 
 -- -----------------------------------------------------------------------------
 -- Names reply
@@ -175,6 +179,7 @@ data HandshakeName = HandshakeName Version HandshakeFlags Node
 
 encodeHandshakeName :: HandshakeName -> ByteString
 encodeHandshakeName (HandshakeName version flags (Node name)) = runPut $ do
+    putWord16be (fromIntegral (7 + BS.length name))
     put 'n'
     put version
     put flags
@@ -204,6 +209,24 @@ data HandshakeStatus
     | HandshakeStatusFalse
     deriving (Bounded, Enum, Eq, Show)
 
+encodeHandshakeStatus :: HandshakeStatus -> ByteString
+encodeHandshakeStatus = runPut . p
+  where
+    p :: HandshakeStatus -> Put
+    p HandshakeStatusOk             = putStatus "ok"
+    p HandshakeStatusOkSimultaneous = putStatus "ok_simultaneous"
+    p HandshakeStatusNok            = putStatus "nok"
+    p HandshakeStatusNotAllowed     = putStatus "not_allowed"
+    p HandshakeStatusAlive          = putStatus "alive"
+    p HandshakeStatusTrue           = putStatus "true"
+    p HandshakeStatusFalse          = putStatus "false"
+
+    putStatus :: ByteString -> Put
+    putStatus status = do
+        putWord16be (fromIntegral (1 + BS.length status))
+        put 's'
+        putByteString status
+
 receiveHandshakeStatus :: Receive HandshakeStatus
 receiveHandshakeStatus = receivePacket2 `with` p
   where
@@ -220,28 +243,20 @@ receiveHandshakeStatus = receivePacket2 `with` p
             "false"           -> pure HandshakeStatusFalse
             x                 -> fail ("Unexpected status " ++ BS.unpack x)
 
-encodeHandshakeStatus :: HandshakeStatus -> ByteString
-encodeHandshakeStatus = runPut . p
-  where
-    p :: HandshakeStatus -> Put
-    p HandshakeStatusOk             = putStatus "ok"
-    p HandshakeStatusOkSimultaneous = putStatus "ok_simultaneous"
-    p HandshakeStatusNok            = putStatus "nok"
-    p HandshakeStatusNotAllowed     = putStatus "not_allowed"
-    p HandshakeStatusAlive          = putStatus "alive"
-    p HandshakeStatusTrue           = putStatus "true"
-    p HandshakeStatusFalse          = putStatus "false"
-
-    putStatus :: ByteString -> Put
-    putStatus status = do
-        put 's'
-        putByteString status
-
 -- -----------------------------------------------------------------------------
 -- Handshake challenge
 
 data HandshakeChallenge = HandshakeChallenge Version HandshakeFlags Challenge Node
     deriving (Eq, Show, Generic)
+
+encodeHandshakeChallenge :: HandshakeChallenge -> ByteString
+encodeHandshakeChallenge (HandshakeChallenge version flags challenge (Node name)) = runPut $ do
+    putWord16be (fromIntegral (11 + BS.length name))
+    put 'n'
+    put version
+    put flags
+    put challenge
+    put name
 
 receiveHandshakeChallenge :: Node -> Receive HandshakeChallenge
 receiveHandshakeChallenge (Node expected_node) = receivePacket2 `with` p
@@ -262,15 +277,6 @@ receiveHandshakeChallenge (Node expected_node) = receivePacket2 `with` p
 
         pure (HandshakeChallenge ver flags challenge (Node actual_node))
 
--- // currently unused
--- encodeHandshakeChallenge :: HandshakeChallenge -> Put
--- encodeHandshakeChallenge (HandshakeChallenge version flags challenge name) = runPut $ do
---     put 'n'
---     put version
---     put flags
---     put challenge
---     putByteString name
-
 -- -----------------------------------------------------------------------------
 -- Handshake challenge reply
 
@@ -279,24 +285,30 @@ data HandshakeChallengeReply = HandshakeChallengeReply Challenge Digest
 
 encodeHandshakeChallengeReply :: HandshakeChallengeReply -> ByteString
 encodeHandshakeChallengeReply (HandshakeChallengeReply challenge digest) = runPut $ do
+    putWord16be 21
     put 'r'
     put challenge
     put digest
 
--- // currently unused
--- receiveHandshakeChallengeReply :: Receive HandshakeChallengeReply
--- receiveHandshakeChallengeReply = receivePacket2 `with` p
---   where
---     p :: Get HandshakeChallengeReply
---     p = do
---         getChar 'r'
---         HandshakeChallengeReply <$> get <*> get
+receiveHandshakeChallengeReply :: Receive HandshakeChallengeReply
+receiveHandshakeChallengeReply = receivePacket2 `with` p
+  where
+    p :: Get HandshakeChallengeReply
+    p = do
+        getChar 'r'
+        HandshakeChallengeReply <$> get <*> get
 
 -- -----------------------------------------------------------------------------
 -- Handshake challenge ack
 
 newtype HandshakeChallengeAck = HandshakeChallengeAck Digest
     deriving (Eq, Show)
+
+encodeHandshakeChallengeAck :: HandshakeChallengeAck -> ByteString
+encodeHandshakeChallengeAck (HandshakeChallengeAck digest) = runPut $ do
+    putWord16be 17
+    put 'a'
+    put digest
 
 receiveHandshakeChallengeAck :: Digest -> Receive HandshakeChallengeAck
 receiveHandshakeChallengeAck (Digest my_digest) = receivePacket2 `with` p
@@ -313,12 +325,6 @@ receiveHandshakeChallengeAck (Digest my_digest) = receivePacket2 `with` p
                   ++ BS.unpack their_digest)
 
         pure (HandshakeChallengeAck (Digest their_digest))
-
--- // currently unused
--- encodeHandshakeChallengeAck :: HandshakeChallengeAck -> ByteString
--- encodeHandshakeChallengeAck (HandshakeChallengeAck digest) = runPut $ do
---     put 'a'
---     put digest
 
 -- -----------------------------------------------------------------------------
 -- Misc types and functions
@@ -401,7 +407,7 @@ instance Serialize HandshakeFlags where
 -- Message
 
 data Message = Message DistributionHeader ControlMessage DataMessage
-    -- deriving (Eq, Show)
+  -- deriving (Eq, Show)
 
 instance Serialize Message where
     put (Message header control_msg data_msg) = do
@@ -423,7 +429,7 @@ instance Serialize Message where
 data DistributionHeader = DistributionHeader
                               Bool -- is long atoms? (not relevant if no cache refs)
                               [AtomCacheRef]
-    deriving (Show, Eq)
+  deriving (Show, Eq)
 
 instance Serialize DistributionHeader where
     put (DistributionHeader _ []) = do
@@ -570,7 +576,7 @@ data AtomCacheRef = AtomCacheRef
                         Bool
                         Word8              -- internal segment index
                         (Maybe ByteString) -- Just if new cache entry, Nothing if old
-    deriving (Eq, Show)
+  deriving (Eq, Show)
 
 -- +-------------------+---------------+
 -- | 1 bit             | 3 bits        |
@@ -596,6 +602,7 @@ instance Serialize ControlMessage where
 -- Data message
 
 data DataMessage = DataMessage
+
 instance Serialize DataMessage where
     put = undefined
     get = undefined

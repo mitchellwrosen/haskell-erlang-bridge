@@ -23,7 +23,6 @@ import           Data.ByteString           (ByteString)
 import qualified Data.ByteString.Char8     as BS
 import           Data.Monoid
 import           Network.Simple.TCP
-import           Data.Serialize
 import qualified Data.Set                  as S
 import           Data.Typeable
 import           Data.Word
@@ -49,7 +48,7 @@ epmdRegister :: Port        -- ^ This node's listening port.
 epmdRegister port_num name epmd_host epmd_port =
     bracketOnError (connectSock epmd_host epmd_port) (closeSock . fst) $ \(sock, _) -> do
         let alive_req = AliveRequest port_num NormalNode TCP_IPV4 5 5 (fromIntegral (BS.length name)) name 0 ""
-        sendPacket2 sock (encodeAliveRequest alive_req)
+        send sock (encodeAliveRequest alive_req)
         runReceive receiveAliveReply sock >>= \case
             Left err               -> throw (EpmdException (show err))
             Right (AliveReply 0 _) -> pure (closeSock sock)
@@ -64,7 +63,7 @@ epmdNodeInfo :: HostName    -- ^ Epmd host, e.g. "0.0.0.0"
              -> IO (Either Word8 (Port, HighestVersion, LowestVersion))
 epmdNodeInfo epmd_host epmd_port name =
     bracket (connectSock epmd_host epmd_port) (closeSock . fst) $ \(sock, _) -> do
-        sendPacket2 sock (encodePortRequest (PortRequest name))
+        send sock (encodePortRequest (PortRequest name))
         runReceive receivePortReply sock >>= \case
             Left err                                            -> throw (EpmdException (show err))
             Right (PortReplyFailure code)                       -> pure (Left code)
@@ -76,7 +75,7 @@ epmdNames :: HostName    -- ^ Epmd host, e.g. "0.0.0.0"
           -> IO [(ByteString, Port)]
 epmdNames epmd_host epmd_port =
     bracket (connectSock epmd_host epmd_port) (closeSock . fst) $ \(sock, _) -> do
-        sendPacket2 sock encodeNamesRequest
+        send sock encodeNamesRequest
         runReceive receiveNamesReply sock >>= \case
             Left err                   -> throw (EpmdException (show err))
             Right (NamesReply _ names) -> pure names
@@ -107,7 +106,7 @@ nodeHandshake node (OutCookie out_cookie) (InCookie in_cookie) version host serv
       where
         send_name :: HandshakeName -> IO HandshakeResult
         send_name name = do
-            sendPacket2 sock (encodeHandshakeName name)
+            send sock (encodeHandshakeName name)
             recv_status
 
         recv_status :: IO HandshakeResult
@@ -130,7 +129,7 @@ nodeHandshake node (OutCookie out_cookie) (InCookie in_cookie) version host serv
 
         send_challenge_reply :: HandshakeChallengeReply -> Challenge -> IO HandshakeResult
         send_challenge_reply reply challenge = do
-            sendPacket2 sock (encodeHandshakeChallengeReply reply)
+            send sock (encodeHandshakeChallengeReply reply)
             recv_challenge_ack challenge
 
         recv_challenge_ack :: Challenge -> IO HandshakeResult
@@ -147,7 +146,7 @@ nodeHandshake node (OutCookie out_cookie) (InCookie in_cookie) version host serv
 
         status_alive :: IO HandshakeResult
         status_alive = do
-            sendPacket2 sock (encodeHandshakeStatus HandshakeStatusFalse)
+            send sock (encodeHandshakeStatus HandshakeStatusFalse)
             pure HandshakeAlive
 
         flags :: HandshakeFlags
@@ -166,9 +165,3 @@ generateChallenge = randomIO
 
 generateDigest :: Challenge -> ByteString -> Digest
 generateDigest (Challenge challenge) cookie = Digest (hash (cookie <> BS.pack (show challenge)))
-
-sendPacket2 :: Socket -> ByteString -> IO ()
-sendPacket2 sock bytes = send sock (len <> bytes)
-  where
-    len :: ByteString
-    len = runPut (putWord16be (fromIntegral (BS.length bytes)))
