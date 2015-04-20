@@ -33,7 +33,7 @@ import           System.Random
 -- EPMD API
 
 -- TODO: Expand this type.
-data EpmdException = EpmdException
+data EpmdException = EpmdException String
     deriving (Show, Typeable)
 
 instance Exception EpmdException
@@ -51,9 +51,9 @@ epmdRegister port_num name epmd_host epmd_port =
         let alive_req = AliveRequest port_num NormalNode TCP_IPV4 5 5 (fromIntegral (BS.length name)) name 0 ""
         sendPacket2 sock (encodeAliveRequest alive_req)
         runReceive receiveAliveReply sock >>= \case
-            Left _err              -> throw EpmdException
+            Left err               -> throw (EpmdException (show err))
             Right (AliveReply 0 _) -> pure (closeSock sock)
-            Right _                -> throw EpmdException
+            Right _                -> throw (EpmdException "todo")
 
 -- | Ask for the node info of a named node. Return either the port-please error
 -- code, or the port, highest, and lowest protocol versions of the requested
@@ -66,7 +66,7 @@ epmdNodeInfo epmd_host epmd_port name =
     bracket (connectSock epmd_host epmd_port) (closeSock . fst) $ \(sock, _) -> do
         sendPacket2 sock (encodePortRequest (PortRequest name))
         runReceive receivePortReply sock >>= \case
-            Left _err                                           -> throw EpmdException
+            Left err                                            -> throw (EpmdException (show err))
             Right (PortReplyFailure code)                       -> pure (Left code)
             Right (PortReplySuccess port _ _ hi_ver lo_ver _ _) -> pure (Right (port, hi_ver, lo_ver))
 
@@ -78,7 +78,7 @@ epmdNames epmd_host epmd_port =
     bracket (connectSock epmd_host epmd_port) (closeSock . fst) $ \(sock, _) -> do
         sendPacket2 sock encodeNamesRequest
         runReceive receiveNamesReply sock >>= \case
-            Left _err                  -> throw EpmdException
+            Left err                   -> throw (EpmdException (show err))
             Right (NamesReply _ names) -> pure names
 
 -- -----------------------------------------------------------------------------

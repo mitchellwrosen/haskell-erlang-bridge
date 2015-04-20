@@ -80,6 +80,7 @@ encodePortRequest (PortRequest name) = runPut $ do
 data PortReply
     = PortReplySuccess Port NodeType Protocol HighestVersion LowestVersion ByteString ByteString
     | PortReplyFailure Word8
+    deriving Show
 
 receivePortReply :: Receive PortReply
 receivePortReply = do

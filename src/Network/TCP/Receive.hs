@@ -25,7 +25,7 @@ import           Control.Monad.Reader
 import           Control.Monad.Trans.Either
 import           Control.Monad.Trans.Maybe
 import           Data.Monoid
-import qualified Data.ByteString           as BS
+import qualified Data.ByteString.Char8     as BS
 import           Data.ByteString           (ByteString)
 import           Data.Serialize
 import           Data.Word
@@ -102,24 +102,19 @@ recvN :: Socket -> Int -> IO (Maybe ByteString)
 recvN s = runMaybeT . go
   where
     go :: Int -> MaybeT IO ByteString
+    go 0 = pure ""
     go n = do
       bytes <- MaybeT (recv s n)
       case n - BS.length bytes of
-          0 -> pure bytes
+          0  -> pure bytes
           n' -> (bytes <>) <$> go n'
 
 -- | Receive all remaining bytes on the wire.
 recvAll :: forall m. (Applicative m, MonadIO m) => Socket -> m ByteString
-recvAll = go ""
+recvAll sock = go ""
   where
-    go :: ByteString -> Socket -> m ByteString
-    go acc sock = recv sock block_size >>= maybe (pure acc) go'
+    go :: ByteString -> m ByteString
+    go acc = recv sock block_size >>= maybe (pure acc) (go . (acc <>))
       where
-        go' :: ByteString -> m ByteString
-        go' bytes = let all_bytes = acc <> bytes
-                    in if BS.length bytes == block_size
-                           then go all_bytes sock
-                           else pure all_bytes
-
-    block_size :: Int
-    block_size = 4096
+        block_size :: Int
+        block_size = 4096
