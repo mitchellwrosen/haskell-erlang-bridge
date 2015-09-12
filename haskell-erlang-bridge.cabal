@@ -14,8 +14,9 @@ build-type:          Simple
 cabal-version:       >=1.10
 
 library
-  exposed-modules:     Erlang.Distribution
+  exposed-modules:     Erlang.Distribution.EPMD
                      , Erlang.Distribution.Internal
+                     , Erlang.Distribution.Node
                      , Erlang.Distribution.Term
                      , Network.TCP.Receive
   -- other-modules:
