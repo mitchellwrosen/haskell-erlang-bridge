@@ -405,13 +405,16 @@ instance Serialize HandshakeFlags where
 -- -----------------------------------------------------------------------------
 -- Message
 
-data Message = Message DistributionHeader ControlMessage DataMessage
+-- Nodes running erts >= 5.7.2 will always send a DistributionHeader.
+data Message = Message (Maybe DistributionHeader) ControlMessage DataMessage
   -- deriving (Eq, Show)
 
 instance Serialize Message where
-    put (Message header control_msg data_msg) = do
+    put (Message mheader control_msg data_msg) = do
         let payload = runPut $ do
-                          put header
+                          case mheader of
+                              Just header -> put header
+                              Nothing     -> putWord8 112
                           put control_msg
                           put data_msg
         putWord32be (fromIntegral (BS.length payload))
@@ -488,9 +491,9 @@ instance Serialize DistributionHeader where
         -- | InternalSegmentIndex |
         -- +----------------------+
         putRef :: AtomCacheRef -> Put
-        putRef (AtomCacheRef _ _ _ seg_index Nothing) = putWord8 seg_index
-        putRef (AtomCacheRef _ _ _ seg_index (Just atom_text)) = do
-            putWord8 seg_index
+        putRef (AtomCacheRef _ internal_seg_index Nothing) = putWord8 internal_seg_index
+        putRef (AtomCacheRef _ internal_seg_index (Just atom_text)) = do
+            putWord8 internal_seg_index
             putAtomTextLength (BS.length (atom_text))
             putByteString atom_text
 
@@ -524,13 +527,13 @@ instance Serialize DistributionHeader where
 
         getRef :: Bool -> Nibble -> Get AtomCacheRef
         getRef is_long_atoms (Nibble True s1 s2 s3) = do
-            seg_index <- getWord8
-            len       <- getAtomTextLength is_long_atoms
-            atom_text <- getByteString len
-            pure (AtomCacheRef s1 s2 s3 seg_index (Just atom_text))
+            internal_seg_index <- getWord8
+            len                <- getAtomTextLength is_long_atoms
+            atom_text          <- getByteString len
+            pure (AtomCacheRef (SegmentIndex s1 s2 s3) internal_seg_index (Just atom_text))
         getRef _ (Nibble _ s1 s2 s3) = do
-            seg_index <- getWord8
-            pure (AtomCacheRef s1 s2 s3 seg_index Nothing)
+            internal_seg_index <- getWord8
+            pure (AtomCacheRef (SegmentIndex s1 s2 s3) internal_seg_index Nothing)
 
         -- Get either 1 or 2 bytes of length, per is_long_atoms.
         getAtomTextLength :: Bool -> Get Int
@@ -570,11 +573,9 @@ word8bits b7 b6 b5 b4 b3 b2 b1 b0 =
     set_bit_if b i = if b then bit i else 0
 
 data AtomCacheRef = AtomCacheRef
-                        Bool               -- 3 bits of segment index
-                        Bool
-                        Bool
-                        Word8              -- internal segment index
-                        (Maybe ByteString) -- Just if new cache entry, Nothing if old
+                        SegmentIndex         -- 3 bits of segment index
+                        InternalSegmentIndex -- internal segment index
+                        (Maybe ByteString)   -- Just if new cache entry, Nothing if old
   deriving (Eq, Show)
 
 -- +-------------------+---------------+
@@ -583,7 +584,12 @@ data AtomCacheRef = AtomCacheRef
 -- | NewCacheEntryFlag | Segment index |
 -- +-------------------+---------------+
 atomCacheRefFlag :: AtomCacheRef -> Nibble
-atomCacheRefFlag (AtomCacheRef b2 b1 b0 _ m) = Nibble (isJust m) b2 b1 b0
+atomCacheRefFlag (AtomCacheRef (SegmentIndex b2 b1 b0) _ m) = Nibble (isJust m) b2 b1 b0
+
+data SegmentIndex = SegmentIndex Bool Bool Bool
+  deriving (Eq, Show)
+
+type InternalSegmentIndex = Word8
 
 -- -----------------------------------------------------------------------------
 -- Control message
