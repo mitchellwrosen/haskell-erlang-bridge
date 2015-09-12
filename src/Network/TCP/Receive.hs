@@ -19,7 +19,6 @@ module Network.TCP.Receive
     , receivePacket4
     ) where
 
-import           Control.Applicative
 import           Control.Monad.IO.Class
 import           Control.Monad.Reader
 import           Control.Monad.Trans.Either

@@ -12,7 +12,6 @@ import           Data.ByteString                  (ByteString)
 import qualified Data.ByteString.Char8            as BS
 import qualified Data.Foldable                    as F
 import           Data.Maybe
-import           Data.Monoid
 import           Data.Serialize
 import           Data.Set                         (Set)
 import qualified Data.Set                         as S

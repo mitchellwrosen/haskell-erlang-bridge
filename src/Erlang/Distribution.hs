@@ -16,7 +16,6 @@ module Erlang.Distribution
 import Erlang.Distribution.Internal
 import Network.TCP.Receive
 
-import           Control.Applicative
 import           Control.Exception
 import           Crypto.Hash.MD5           (hash)
 import           Data.ByteString           (ByteString)
