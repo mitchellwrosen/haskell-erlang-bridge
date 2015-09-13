@@ -12,23 +12,24 @@ import Network.TCP.Receive
 import           Control.Applicative
 import           Control.Exception
 import           Control.Monad
-import           Crypto.Hash.MD5                  (hash)
+import           Crypto.Hash.MD5       (hash)
 import           Data.Bits
-import           Data.ByteString                  (ByteString)
-import qualified Data.ByteString.Char8            as BS
-import qualified Data.Foldable                    as F
+import           Data.ByteString       (ByteString)
+import qualified Data.ByteString.Char8 as BS
+import qualified Data.Foldable         as F
+import           Data.List             (genericLength)
 import           Data.Maybe
 import           Data.Monoid
 import           Data.Serialize
-import           Data.Set                         (Set)
-import qualified Data.Set                         as S
+import           Data.Set              (Set)
+import qualified Data.Set              as S
 import           Data.Typeable
 import           Data.Word
-import           GHC.Exts                         (IsString)
+import           GHC.Exts              (IsString)
 import           GHC.Generics
-import           Network.Simple.TCP               (Socket)
-import qualified Network.Simple.TCP               as TCP
-import           Prelude                          hiding (getChar)
+import           Network.Simple.TCP    (Socket)
+import qualified Network.Simple.TCP    as TCP
+import           Prelude               hiding (getChar)
 import           System.Random
 
 data HandshakeException
@@ -126,7 +127,7 @@ data HandshakeName = HandshakeName Version HandshakeFlags NodeName
 
 encodeHandshakeName :: HandshakeName -> ByteString
 encodeHandshakeName (HandshakeName ver flags (NodeName name)) = runPut $ do
-    putWord16be (fromIntegral (7 + BS.length name))
+    putWord16be (7 + bsLen name)
     put 'n'
     put ver
     put flags
@@ -170,7 +171,7 @@ encodeHandshakeStatus = runPut . p
 
     putStatus :: ByteString -> Put
     putStatus status = do
-        putWord16be (fromIntegral (1 + BS.length status))
+        putWord16be (1 + bsLen status)
         put 's'
         putByteString status
 
@@ -198,7 +199,7 @@ data HandshakeChallenge = HandshakeChallenge Version HandshakeFlags Challenge No
 
 encodeHandshakeChallenge :: HandshakeChallenge -> ByteString
 encodeHandshakeChallenge (HandshakeChallenge ver flags challenge (NodeName name)) = runPut $ do
-    putWord16be (fromIntegral (11 + BS.length name))
+    putWord16be (11 + bsLen name)
     put 'n'
     put ver
     put flags
@@ -365,7 +366,7 @@ instance Serialize Message where
                               Nothing     -> putWord8 112
                           put control_msg
                           put data_msg
-        putWord32be (fromIntegral (BS.length payload))
+        putWord32be (bsLen payload)
         putByteString payload
 
     get = do
@@ -389,7 +390,7 @@ instance Serialize DistributionHeader where
     put (DistributionHeader is_long_atoms cache_refs) = do
         putWord8 131
         putWord8 68
-        putWord8 (fromIntegral (length cache_refs))
+        putWord8 (genericLength cache_refs)
         putFlags cache_refs
         mapM_ putRef cache_refs
       where
@@ -570,4 +571,3 @@ getChar expected = do
     actual <- get
     when (expected /= actual) $
         fail ("Unexpected char " ++ [actual])
-
